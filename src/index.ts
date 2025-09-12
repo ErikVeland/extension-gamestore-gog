@@ -1,4 +1,5 @@
-import * as Promise from 'bluebird';
+import Bluebird from 'bluebird';
+const Promise = Bluebird;
 
 import * as path from 'path';
 import * as winapi from 'winapi-bindings';
