@@ -31,7 +31,7 @@ class GoGLauncher implements types.IGameStore {
       // No Windows, no gog launcher!
       try {
         const gogPath = winapi.RegGetValue('HKEY_LOCAL_MACHINE',
-          'SOFTWARE\\WOW6432Node\\GOG.com\\GalaxyClient\\paths', 'client');
+                                           'SOFTWARE\\WOW6432Node\\GOG.com\\GalaxyClient\\paths', 'client');
         this.mClientPath = Promise.resolve(gogPath.value as string);
       } catch (err) {
         log('info', 'gog not found', { error: err.message });
@@ -66,7 +66,7 @@ class GoGLauncher implements types.IGameStore {
           cwd: path.dirname(execInfo.execPath),
           suggestDeploy: true,
           shell: true,
-      }));
+        }));
   }
 
   public getExecInfo(appId: string): Promise<types.IExecInfo> {
@@ -76,15 +76,15 @@ class GoGLauncher implements types.IGameStore {
         return (gameEntry === undefined)
           ? Promise.reject(new types.GameEntryNotFound(appId, STORE_ID))
           : this.mClientPath.then((basePath) => {
-              const gogClientExec = {
-                execPath: path.join(basePath, GOG_EXEC),
-                arguments: ['/command=runGame',
-                            `/gameId=${gameEntry.appid}`,
-                            `path="${gameEntry.gamePath}"`],
-              };
+            const gogClientExec = {
+              execPath: path.join(basePath, GOG_EXEC),
+              arguments: ['/command=runGame',
+                `/gameId=${gameEntry.appid}`,
+                `path="${gameEntry.gamePath}"`],
+            };
 
-              return Promise.resolve(gogClientExec);
-            });
+            return Promise.resolve(gogClientExec);
+          });
       });
   }
 
@@ -176,8 +176,8 @@ class GoGLauncher implements types.IGameStore {
         } catch (err) {
           return (err.code === 'ENOENT') ? resolve([]) : reject(err);
         }
-    })
-    : Promise.resolve([]);
+      })
+      : Promise.resolve([]);
   }
 }
 
