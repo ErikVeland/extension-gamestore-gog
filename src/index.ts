@@ -1,4 +1,4 @@
-import Bluebird from 'bluebird';
+import * as Bluebird from 'bluebird';
 const Promise = Bluebird;
 
 import * as path from 'path';
