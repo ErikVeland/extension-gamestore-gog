@@ -1,9 +1,7 @@
-import * as Promise from 'bluebird';
-
 import * as path from 'path';
-import * as winapi from 'winapi-bindings';
+import * as fs from 'fs-extra';
 
-import { fs, log, types } from 'vortex-api';
+import { log, types } from 'vortex-api';
 
 const STORE_ID = 'gog';
 const STORE_NAME = 'GOG';
@@ -11,6 +9,7 @@ const STORE_NAME = 'GOG';
 const STORE_PRIORITY = 15;
 
 const GOG_EXEC = 'GalaxyClient.exe';
+const GOG_MAC_EXEC = 'GOG Galaxy.app';
 
 const REG_GOG_GAMES = 'SOFTWARE\\WOW6432Node\\GOG.com\\Games';
 
@@ -27,19 +26,57 @@ class GoGLauncher implements types.IGameStore {
 
   constructor() {
     if (process.platform === 'win32') {
-      // No Windows, no gog launcher!
+      // Windows implementation
       try {
-        const gogPath = winapi.RegGetValue('HKEY_LOCAL_MACHINE',
-          'SOFTWARE\\WOW6432Node\\GOG.com\\GalaxyClient\\paths', 'client');
-        this.mClientPath = Promise.resolve(gogPath.value as string);
+        // We need to dynamically import winapi only on Windows
+        import('winapi-bindings').then((winapi) => {
+          const gogPath = winapi.RegGetValue('HKEY_LOCAL_MACHINE',
+            'SOFTWARE\\WOW6432Node\\GOG.com\\GalaxyClient\\paths', 'client');
+          this.mClientPath = Promise.resolve(gogPath.value as string);
+        }).catch((err) => {
+          log('info', 'gog not found', { error: err.message });
+          this.mClientPath = undefined;
+        });
       } catch (err) {
         log('info', 'gog not found', { error: err.message });
         this.mClientPath = undefined;
       }
+    } else if (process.platform === 'darwin') {
+      // macOS implementation
+      this.mClientPath = this.findMacOSGOGPath();
     } else {
-      log('info', 'gog not found', { error: 'only available on Windows systems' });
+      log('info', 'gog not found', { error: 'unsupported platform' });
       this.mClientPath = undefined;
     }
+  }
+
+  /**
+   * Find GOG Galaxy on macOS
+   */
+  private async findMacOSGOGPath(): Promise<string> {
+    // Check standard installation path
+    const standardPath = '/Applications/GOG Galaxy.app';
+    try {
+      const stat = await fs.stat(standardPath);
+      if (stat.isDirectory()) {
+        return Promise.resolve(standardPath);
+      }
+    } catch (err) {
+      // Continue to next check
+    }
+
+    // Check in user's Applications directory
+    const userAppsPath = path.join(process.env.HOME || '', 'Applications', 'GOG Galaxy.app');
+    try {
+      const stat = await fs.stat(userAppsPath);
+      if (stat.isDirectory()) {
+        return Promise.resolve(userAppsPath);
+      }
+    } catch (err) {
+      // Not found
+    }
+
+    return Promise.reject(new Error('GOG Galaxy not found on macOS'));
   }
 
   /**
@@ -75,14 +112,23 @@ class GoGLauncher implements types.IGameStore {
         return (gameEntry === undefined)
           ? Promise.reject(new types.GameEntryNotFound(appId, STORE_ID))
           : this.mClientPath.then((basePath) => {
-              const gogClientExec = {
-                execPath: path.join(basePath, GOG_EXEC),
-                arguments: ['/command=runGame',
-                            `/gameId=${gameEntry.appid}`,
-                            `path="${gameEntry.gamePath}"`],
-              };
-
-              return Promise.resolve(gogClientExec);
+              if (process.platform === 'darwin') {
+                // On macOS, we launch the app bundle directly
+                const gogClientExec = {
+                  execPath: basePath,
+                  arguments: [`/gameId=${gameEntry.appid}`, '/command=runGame', `path="${gameEntry.gamePath}"`],
+                };
+                return Promise.resolve(gogClientExec);
+              } else {
+                // Windows implementation
+                const gogClientExec = {
+                  execPath: path.join(basePath, GOG_EXEC),
+                  arguments: ['/command=runGame',
+                              `/gameId=${gameEntry.appid}`,
+                              `path="${gameEntry.gamePath}"`],
+                };
+                return Promise.resolve(gogClientExec);
+              }
             });
       });
   }
@@ -123,7 +169,13 @@ class GoGLauncher implements types.IGameStore {
 
   public getGameStorePath(): Promise<string> {
     return (!!this.mClientPath)
-      ? this.mClientPath.then(basePath => Promise.resolve(path.join(basePath, 'GalaxyClient.exe')))
+      ? this.mClientPath.then(basePath => {
+          if (process.platform === 'darwin') {
+            return Promise.resolve(basePath);
+          } else {
+            return Promise.resolve(path.join(basePath, 'GalaxyClient.exe'));
+          }
+        })
       : Promise.resolve(undefined);
   }
 
@@ -144,45 +196,128 @@ class GoGLauncher implements types.IGameStore {
   }
 
   private fileExists(filePath: string): PromiseLike<boolean> {
-    return fs.statAsync(filePath)
+    return fs.stat(filePath)
       .then(() => true)
       .catch(() => false);
   }
 
   private getGameEntries(): Promise<types.IGameStoreEntry[]> {
+    if (process.platform === 'win32') {
+      // Windows implementation using registry
+      return this.getGameEntriesWindows();
+    } else if (process.platform === 'darwin') {
+      // macOS implementation
+      return this.getGameEntriesMacOS();
+    } else {
+      return Promise.resolve([]);
+    }
+  }
+
+  private getGameEntriesWindows(): Promise<types.IGameStoreEntry[]> {
     return (!!this.mClientPath)
-      ? new Promise<types.IGameStoreEntry[]>((resolve, reject) => {
+      ? import('winapi-bindings').then((winapi) => {
+        return new Promise<types.IGameStoreEntry[]>((resolve, reject) => {
+          try {
+            winapi.WithRegOpen('HKEY_LOCAL_MACHINE', REG_GOG_GAMES, hkey => {
+              const keys = winapi.RegEnumKeys(hkey);
+              const gameEntries: types.IGameStoreEntry[] = keys.map(key => {
+                try {
+                  const gameEntry: types.IGameStoreEntry = {
+                    appid: winapi.RegGetValue(hkey, key.key, 'gameID').value as string,
+                    gamePath: winapi.RegGetValue(hkey, key.key, 'path').value as string,
+                    name: winapi.RegGetValue(hkey, key.key, 'startMenu').value as string,
+                    gameStoreId: STORE_ID,
+                  };
+                  return gameEntry;
+                } catch (err) {
+                  log('error', 'gamestore-gog: failed to create game entry', err);
+                  // Don't stop, keep going.
+                  return undefined;
+                }
+              }).filter(entry => !!entry);
+              return resolve(gameEntries);
+            });
+          } catch (err) {
+            return (err.code === 'ENOENT') ? resolve([]) : reject(err);
+          }
+        });
+      }).catch(() => Promise.resolve([]))
+      : Promise.resolve([]);
+  }
+
+  private async getGameEntriesMacOS(): Promise<types.IGameStoreEntry[]> {
+    try {
+      // On macOS, we need to look for game info in the GOG Galaxy data directory
+      const homeDir = process.env.HOME || '';
+      const gogDataPath = path.join(homeDir, 'Library', 'Application Support', 'GOG.com', 'Galaxy');
+      
+      // Check if the GOG Galaxy data directory exists
+      try {
+        await fs.stat(gogDataPath);
+      } catch (err) {
+        // GOG Galaxy data directory not found
+        return [];
+      }
+      
+      // Look for game information in the games directory
+      const gamesPath = path.join(gogDataPath, 'games');
+      let gameDirs: string[] = [];
+      
+      try {
+        gameDirs = await fs.readdir(gamesPath);
+      } catch (err) {
+        // Games directory not found
+        return [];
+      }
+      
+      const gameEntries: types.IGameStoreEntry[] = [];
+      
+      // Process each game directory
+      for (const gameId of gameDirs) {
         try {
-          winapi.WithRegOpen('HKEY_LOCAL_MACHINE', REG_GOG_GAMES, hkey => {
-            const keys = winapi.RegEnumKeys(hkey);
-            const gameEntries: types.IGameStoreEntry[] = keys.map(key => {
+          const gameInfoPath = path.join(gamesPath, gameId, 'gameinfo');
+          const gameInfoData = await fs.readFile(gameInfoPath, 'utf8');
+          
+          try {
+            const gameInfo = JSON.parse(gameInfoData);
+            const appid = gameInfo.gameId || gameId;
+            const name = gameInfo.name || gameInfo.title || `GOG Game ${appid}`;
+            const gamePath = gameInfo.installDirectory;
+            
+            // Only add games with valid paths
+            if (gamePath) {
               try {
-                const gameEntry: types.IGameStoreEntry = {
-                  appid: winapi.RegGetValue(hkey, key.key, 'gameID').value as string,
-                  gamePath: winapi.RegGetValue(hkey, key.key, 'path').value as string,
-                  name: winapi.RegGetValue(hkey, key.key, 'startMenu').value as string,
+                await fs.stat(gamePath);
+                gameEntries.push({
+                  appid,
+                  name,
+                  gamePath,
                   gameStoreId: STORE_ID,
-                };
-                return gameEntry;
+                });
               } catch (err) {
-                log('error', 'gamestore-gog: failed to create game entry', err);
-                // Don't stop, keep going.
-                return undefined;
+                // Game directory doesn't exist, skip this game
+                log('debug', 'GOG game directory not found', { gamePath });
               }
-            }).filter(entry => !!entry);
-            return resolve(gameEntries);
-          });
+            }
+          } catch (parseErr) {
+            log('error', 'Failed to parse GOG game info', { gameId, error: parseErr.message });
+          }
         } catch (err) {
-          return (err.code === 'ENOENT') ? resolve([]) : reject(err);
+          // Failed to read game info file
+          log('debug', 'Failed to read GOG game info file', { gameId, error: err.message });
         }
-    })
-    : Promise.resolve([]);
+      }
+      
+      return gameEntries;
+    } catch (err) {
+      log('error', 'Failed to get GOG games on macOS', { error: err.message });
+      return [];
+    }
   }
 }
 
 function main(context: types.IExtensionContext) {
-  const instance: types.IGameStore =
-    process.platform === 'win32' ? new GoGLauncher() : undefined;
+  const instance: types.IGameStore = new GoGLauncher();
 
   if (instance !== undefined) {
     context.registerGameStore(instance);
