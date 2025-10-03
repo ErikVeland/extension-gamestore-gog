@@ -19,7 +19,7 @@ const REG_GOG_GAMES = 'SOFTWARE\\WOW6432Node\\GOG.com\\Games';
  * base class to interact with local GoG Galaxy client
  * @class GoGLauncher
  */
-class GoGLauncher implements types.IGameStore {
+export class GoGLauncher implements types.IGameStore {
   public id: string = STORE_ID;
   public name: string = STORE_NAME;
   public priority: number = STORE_PRIORITY;
@@ -33,6 +33,23 @@ class GoGLauncher implements types.IGameStore {
         const gogPath = winapi.RegGetValue('HKEY_LOCAL_MACHINE',
                                            'SOFTWARE\\WOW6432Node\\GOG.com\\GalaxyClient\\paths', 'client');
         this.mClientPath = Promise.resolve(gogPath.value as string);
+      } catch (err) {
+        log('info', 'gog not found', { error: err.message });
+        this.mClientPath = undefined;
+      }
+    } else if (process.platform === 'darwin') {
+      // macOS implementation: detect synchronously and degrade gracefully if not installed
+      const standardPath = '/Applications/GOG Galaxy.app';
+      const userAppsPath = path.join(process.env.HOME || '', 'Applications', 'GOG Galaxy.app');
+      try {
+        if (fs.existsSync(standardPath)) {
+          this.mClientPath = Promise.resolve(standardPath);
+        } else if (fs.existsSync(userAppsPath)) {
+          this.mClientPath = Promise.resolve(userAppsPath);
+        } else {
+          log('info', 'gog not found', { error: 'macOS app not installed' });
+          this.mClientPath = undefined;
+        }
       } catch (err) {
         log('info', 'gog not found', { error: err.message });
         this.mClientPath = undefined;
@@ -75,16 +92,27 @@ class GoGLauncher implements types.IGameStore {
         const gameEntry = entries.find(entry => entry.appid === appId);
         return (gameEntry === undefined)
           ? Promise.reject(new types.GameEntryNotFound(appId, STORE_ID))
-          : this.mClientPath.then((basePath) => {
-            const gogClientExec = {
-              execPath: path.join(basePath, GOG_EXEC),
-              arguments: ['/command=runGame',
-                `/gameId=${gameEntry.appid}`,
-                `path="${gameEntry.gamePath}"`],
-            };
-
-            return Promise.resolve(gogClientExec);
-          });
+          : (!this.mClientPath
+              ? Promise.reject(new Error('GOG Galaxy not installed'))
+              : this.mClientPath.then((basePath) => {
+              if (process.platform === 'darwin') {
+                // On macOS, we launch the app bundle directly
+                const gogClientExec = {
+                  execPath: basePath,
+                  arguments: [`/gameId=${gameEntry.appid}`, '/command=runGame', `path="${gameEntry.gamePath}"`],
+                };
+                return Promise.resolve(gogClientExec);
+              } else {
+                // Windows implementation
+                const gogClientExec = {
+                  execPath: path.join(basePath, GOG_EXEC),
+                  arguments: ['/command=runGame',
+                              `/gameId=${gameEntry.appid}`,
+                              `path="${gameEntry.gamePath}"`],
+                };
+                return Promise.resolve(gogClientExec);
+              }
+            }));
       });
   }
 
