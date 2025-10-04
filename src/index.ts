@@ -1,5 +1,4 @@
-import * as Bluebird from 'bluebird';
-const Promise = Bluebird;
+// Use native Promise to avoid redeclaration issues in modules with async functions
 
 import * as path from 'path';
 import * as fs from 'fs-extra';
