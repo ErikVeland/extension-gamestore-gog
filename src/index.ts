@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 
 import { log, types } from 'vortex-api';
-import * as Bluebird from 'bluebird';
+import Bluebird = require('bluebird');
 
 const STORE_ID = 'gog';
 const STORE_NAME = 'GOG';
@@ -265,7 +265,7 @@ export class GoGLauncher implements types.IGameStore {
         return Bluebird.resolve(fs.readdir(gamesPath)).catch(() => []);
       })
       .then((gameDirs: string[]) => {
-        return Bluebird.map(gameDirs, (gameId) => {
+        return Bluebird.map<string, void>(gameDirs, (gameId) => {
           const gameInfoPath = path.join(gamesPath, gameId, 'gameinfo');
           return Bluebird.resolve(fs.readFile(gameInfoPath, 'utf8'))
             .then((gameInfoData) => {
